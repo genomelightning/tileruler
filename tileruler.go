@@ -1,143 +1,152 @@
-// Package tileruler is a genome tile rule parser of lightning project.
-package tileruler
+// Tile Ruler is a command line tool for parsing genome tile rules.
+package main
 
 import (
-	"bufio"
+	"encoding/gob"
 	"fmt"
-	"io"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
+	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/Unknwon/com"
+
+	"github.com/genomelightning/tileruler/abv"
+	"github.com/genomelightning/tileruler/rule"
 )
 
-// Rule represents a tile rule.
-type Rule struct {
-	TileId  string `xorm:"VARCHAR(15) UNIQUE(s)"`
-	Factor  int    // Common factor.
-	Band    int    `xorm:"INDEX"` // Band index.
-	Pos     int    // Position index.
-	Variant int    `xorm:"UNIQUE(s)"` // Variant index.
-}
+func initImage() *image.RGBA {
+	m := image.NewRGBA(image.Rect(0, 0, 209, 209))
+	draw.Draw(m, m.Bounds(), image.White, image.ZP, draw.Src)
 
-func powInt(x int, y int) int {
-	num := 1
-	for i := 0; i < y; i++ {
-		num *= x
+	// Draw borders.
+	for i := m.Bounds().Min.X; i < m.Bounds().Max.X; i++ {
+		m.Set(i, m.Bounds().Min.Y, image.Black)
+		m.Set(i, m.Bounds().Max.Y-1, image.Black)
 	}
-	return num
-}
+	for i := m.Bounds().Min.Y; i < m.Bounds().Max.Y; i++ {
+		m.Set(m.Bounds().Min.X, i, image.Black)
+		m.Set(m.Bounds().Max.X-1, i, image.Black)
+	}
 
-// hexStr2int converts hex format string to decimal number.
-func hexStr2int(hexStr string) (int, error) {
-	num := 0
-	length := len(hexStr)
-	for i := 0; i < length; i++ {
-		char := hexStr[length-i-1]
-		factor := -1
-
-		switch {
-		case char >= '0' && char <= '9':
-			factor = int(char) - '0'
-		case char >= 'a' && char <= 'f':
-			factor = int(char) - 'a' + 10
-		default:
-			return -1, fmt.Errorf("invalid hex: %s", char)
+	// Draw grids.
+	for i := 1; i < 13; i++ {
+		for j := m.Bounds().Min.Y; j < m.Bounds().Max.Y; j++ {
+			m.Set(i*16, j, image.Black)
 		}
-
-		num += factor * powInt(16, i)
 	}
-	return num, nil
+	for i := 1; i < 13; i++ {
+		for j := m.Bounds().Min.X; j < m.Bounds().Max.X; j++ {
+			m.Set(j, i*16, image.Black)
+		}
+	}
+	return m
 }
 
-// parseTileId parses given tile information and returns
-// corresponding band and position index.
-func parseTileId(info string) (band int, pos int, err error) {
-	infos := strings.Split(info, ".")
-	if len(infos) != 4 {
-		return -1, -1, fmt.Errorf("invalid format")
+func drawSquare(m *image.RGBA, c color.Color, x, y int) {
+	for i := 0; i < 15; i++ {
+		for j := 0; j < 15; j++ {
+			m.Set(x*16+i+1, y*16+j+1, c)
+		}
 	}
-
-	band, err = hexStr2int(infos[0])
-	if err != nil {
-		return -1, -1, fmt.Errorf("cannot parse band index: %v", err)
-	}
-
-	pos, err = hexStr2int(infos[2])
-	if err != nil {
-		return -1, -1, fmt.Errorf("cannot parse position index: %v", err)
-	}
-	return band, pos, nil
 }
 
-// Parse parses a tile rule file and returns all rules.
-func Parse(name string) ([]*Rule, error) {
-	rules := make([]*Rule, 0, 100)
-	if err := IterateParse(name, func(r *Rule) error {
-		rules = append(rules, r)
-		return nil
-	}); err != nil {
+func getAbvList() ([]string, error) {
+	dir, err := os.Open("/Users/jiahuachen/Downloads/abram")
+	if err != nil {
 		return nil, err
 	}
-	return rules, nil
+
+	fis, err := dir.Readdir(0)
+	if err != nil {
+		return nil, err
+	}
+
+	abvs := make([]string, 0, len(fis))
+	for _, fi := range fis {
+		if strings.HasSuffix(fi.Name(), ".abv") {
+			abvs = append(abvs, fi.Name())
+		}
+	}
+	return abvs, nil
 }
 
-type IterateFunc func(*Rule) error
+func main() {
+	start := time.Now()
 
-func IterateParse(name string, fn IterateFunc) error {
-	if !com.IsFile(name) {
-		return fmt.Errorf("file(%s) does not exist or is not a file", name)
+	var rules map[int]map[int]map[int]*rule.Rule
+	var err error
+	if !com.IsExist("tilerules.gob") {
+		// Parse tile rules.
+		rules, err = rule.Parse("/Users/jiahuachen/Downloads/abram/tiles_w_variants.count.sorted")
+		if err != nil {
+			log.Fatalf("Fail to parse rule file: %v", err)
+		}
+		fmt.Println("Time spent(parse rules):", time.Since(start))
+
+		fw, err := os.Create("tilerules.gob")
+		if err != nil {
+			log.Fatalf("Fail to create gob file: %v", err)
+		}
+		defer fw.Close()
+
+		if err = gob.NewEncoder(fw).Encode(rules); err != nil {
+			log.Fatalf("Fail to encode gob file: %v", err)
+		}
+		fmt.Println("Time spent(encode gob):", time.Since(start))
+	} else {
+		fr, err := os.Open("tilerules.gob")
+		if err != nil {
+			log.Fatalf("Fail to create gob file: %v", err)
+		}
+		defer fr.Close()
+
+		if err = gob.NewDecoder(fr).Decode(&rules); err != nil {
+			log.Fatalf("Fail to decode gob file: %v", err)
+		}
+		fmt.Println("Time spent(decode gob):", time.Since(start))
 	}
 
-	fr, err := os.Open(name)
+	images := make([][]*image.RGBA, 6)
+	for i := range images {
+		images[i] = make([]*image.RGBA, 101)
+		for j := range images[i] {
+			images[i][j] = initImage()
+		}
+	}
+
+	names, err := getAbvList()
 	if err != nil {
-		return err
+		log.Fatalf("Fail to get abv list: %v", err)
 	}
-	defer fr.Close()
+	humans := make([][]*abv.Block, len(names))
 
-	lastTileId := ""
-	curVarIndex := 0
+	for i, name := range names {
+		humans[i], err = abv.Parse(fmt.Sprintf("/Users/jiahuachen/Downloads/abram/%s", name), rules)
+		if err != nil {
+			log.Fatalf("Fail to parse abv file(%s): %v", "hu011C57.abv", err)
+		}
 
-	var errRead error
-	var line string
-	buf := bufio.NewReader(fr)
-	for idx := 0; errRead != io.EOF; idx++ {
-		line, errRead = buf.ReadString('\n')
-		line = strings.TrimSpace(line)
+		for _, b := range humans[i] {
+			drawSquare(images[b.Band][b.Pos], color.RGBA{b.Color, b.Color, b.Color, 255}, i%13, i/13)
+		}
+	}
+	fmt.Println("Time spent(parse blocks):", time.Since(start))
 
-		if errRead != nil {
-			if errRead != io.EOF {
-				return errRead
+	for i := range images {
+		for j := range images[i] {
+			fr, err := os.Create(fmt.Sprintf("imgs/%d-%d.png", i, j))
+			if err != nil {
+				log.Fatalf("Fail to create png file: %v", err)
 			}
-		}
-		if len(line) == 0 {
-			break // Nothing left.
-		}
-
-		r := new(Rule)
-		infos := strings.Split(line, ",")
-		r.Factor, err = com.StrTo(infos[0]).Int()
-		if err != nil {
-			return fmt.Errorf("%d: cannot parse factor of line[%s]: %v", idx, line, err)
-		}
-
-		r.TileId = infos[1][1 : len(infos[1])-1]
-		r.Band, r.Pos, err = parseTileId(r.TileId)
-		if err != nil {
-			return fmt.Errorf("%d: cannot parse ID of line[%s]: %v", idx, line, err)
-		}
-
-		curVarIndex++
-		if r.TileId == lastTileId {
-			r.Variant = curVarIndex
-		} else {
-			curVarIndex = 0
-			lastTileId = r.TileId
-		}
-
-		if err = fn(r); err != nil {
-			return err
+			png.Encode(fr, images[i][j])
+			fr.Close()
 		}
 	}
-	return nil
+
+	fmt.Println("Time spent(total):", time.Since(start))
 }
