@@ -13,29 +13,57 @@ import (
 
 // Rule represents a tile rule.
 type Rule struct {
-	Factor  int // Common factor.
-	Band    int `xorm:"INDEX"` // Band index.
-	Pos     int // Position index.
-	Variant int // Variant index.
+	TileId  string `xorm:"VARCHAR(15) UNIQUE(s)"`
+	Factor  int    // Common factor.
+	Band    int    `xorm:"INDEX"` // Band index.
+	Pos     int    // Position index.
+	Variant int    `xorm:"UNIQUE(s)"` // Variant index.
+}
+
+func powInt(x int, y int) int {
+	num := 1
+	for i := 0; i < y; i++ {
+		num *= x
+	}
+	return num
+}
+
+// hexStr2int converts hex format string to decimal number.
+func hexStr2int(hexStr string) (int, error) {
+	num := 0
+	length := len(hexStr)
+	for i := 0; i < length; i++ {
+		char := hexStr[length-i-1]
+		factor := -1
+
+		switch {
+		case char >= '0' && char <= '9':
+			factor = int(char) - '0'
+		case char >= 'a' && char <= 'f':
+			factor = int(char) - 'a' + 10
+		default:
+			return -1, fmt.Errorf("invalid hex: %s", char)
+		}
+
+		num += factor * powInt(16, i)
+	}
+	return num, nil
 }
 
 // parseTileId parses given tile information and returns
 // corresponding band and position index.
-// It handles quotes around information.
-// e.g.: "000.00.001.000"
 func parseTileId(info string) (band int, pos int, err error) {
-	infos := strings.Split(info[1:len(info)-1], ".")
+	infos := strings.Split(info, ".")
 	if len(infos) != 4 {
 		return -1, -1, fmt.Errorf("invalid format")
 	}
 
-	band, err = com.StrTo(infos[0]).Int()
+	band, err = hexStr2int(infos[0])
 	if err != nil {
 		return -1, -1, fmt.Errorf("cannot parse band index: %v", err)
 	}
 
-	// TODO: convert hex format string to decimal number.
-	pos, err = com.StrTo(infos[2]).Int()
+	pos, err = hexStr2int(infos[2])
 	if err != nil {
 		return -1, -1, fmt.Errorf("cannot parse position index: %v", err)
 	}
@@ -44,20 +72,32 @@ func parseTileId(info string) (band int, pos int, err error) {
 
 // Parse parses a tile rule file and returns all rules.
 func Parse(name string) ([]*Rule, error) {
+	rules := make([]*Rule, 0, 100)
+	if err := IterateParse(name, func(r *Rule) error {
+		rules = append(rules, r)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return rules, nil
+}
+
+type IterateFunc func(*Rule) error
+
+func IterateParse(name string, fn IterateFunc) error {
 	if !com.IsFile(name) {
-		return nil, fmt.Errorf("file(%s) does not exist or is not a file", name)
+		return fmt.Errorf("file(%s) does not exist or is not a file", name)
 	}
 
 	fr, err := os.Open(name)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer fr.Close()
 
 	lastTileId := ""
 	curVarIndex := 0
 
-	rules := make([]*Rule, 0, 100)
 	var errRead error
 	var line string
 	buf := bufio.NewReader(fr)
@@ -67,9 +107,10 @@ func Parse(name string) ([]*Rule, error) {
 
 		if errRead != nil {
 			if errRead != io.EOF {
-				return nil, errRead
+				return errRead
 			}
-		} else if len(line) == 0 {
+		}
+		if len(line) == 0 {
 			break // Nothing left.
 		}
 
@@ -77,27 +118,26 @@ func Parse(name string) ([]*Rule, error) {
 		infos := strings.Split(line, ",")
 		r.Factor, err = com.StrTo(infos[0]).Int()
 		if err != nil {
-			return nil, fmt.Errorf("cannot parse factor of line[%s]: %v", line, err)
+			return fmt.Errorf("%d: cannot parse factor of line[%s]: %v", idx, line, err)
 		}
 
-		tileId := infos[1]
-		r.Band, r.Pos, err = parseTileId(tileId)
+		r.TileId = infos[1][1 : len(infos[1])-1]
+		r.Band, r.Pos, err = parseTileId(r.TileId)
 		if err != nil {
-			return nil, fmt.Errorf("cannot parse ID of line[%s]: %v", line, err)
+			return fmt.Errorf("%d: cannot parse ID of line[%s]: %v", idx, line, err)
 		}
 
 		curVarIndex++
-		if tileId == lastTileId {
+		if r.TileId == lastTileId {
 			r.Variant = curVarIndex
 		} else {
 			curVarIndex = 0
-			lastTileId = tileId
+			lastTileId = r.TileId
 		}
 
-		rules = append(rules, r)
-		if idx == 99 {
-			break
+		if err = fn(r); err != nil {
+			return err
 		}
 	}
-	return rules, nil
+	return nil
 }
