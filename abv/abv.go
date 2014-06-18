@@ -15,15 +15,16 @@ import (
 
 // Block represents a block for a human in given position in slippy map.
 type Block struct {
-	Band  int   // Band index.
-	Pos   int   // Position index.
-	Color uint8 // NOTE: might change to int for special meaning.
+	Factor  int
+	Band    int // Band index.
+	Pos     int // Position index.
+	Variant int
 }
 
 var encodeStd = []byte("CDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
 
 // Parse parses a abv file based on given tile rules and returns all blocks.
-func Parse(name string, rules map[int]map[int]map[int]*rule.Rule) ([]*Block, error) {
+func Parse(name string, maxBandIdx, maxPosIdx int, rules map[int]map[int]map[int]*rule.Rule) ([]*Block, error) {
 	if !com.IsFile(name) {
 		return nil, fmt.Errorf("file(%s) does not exist or is not a file", name)
 	}
@@ -68,14 +69,12 @@ func Parse(name string, rules map[int]map[int]map[int]*rule.Rule) ([]*Block, err
 				return nil, err
 			}
 
-			// NOTE: limit band and position just for debugging purpose.
-			if bandIdx > 5 {
+			if maxBandIdx >= 0 && bandIdx > maxBandIdx {
 				break
 			}
 		} else {
 			for i, char := range line {
-				// NOTE: limit band and position just for debugging purpose.
-				if i > 100 {
+				if maxPosIdx >= 0 && i > maxPosIdx {
 					break
 				}
 
@@ -93,12 +92,16 @@ func Parse(name string, rules map[int]map[int]map[int]*rule.Rule) ([]*Block, err
 					}
 				}
 
-				b := &Block{bandIdx, i, 0}
-				r, ok := rules[b.Band][b.Pos][varIdx]
-				if !ok {
-					return nil, fmt.Errorf("Rule not found: %d.%d.%d", b.Band, b.Pos, varIdx)
+				b := &Block{
+					Band:    bandIdx,
+					Pos:     i,
+					Variant: varIdx,
 				}
-				b.Color = uint8(r.Factor)
+				// r, ok := rules[b.Band][b.Pos][varIdx]
+				// if !ok {
+				// 	return nil, fmt.Errorf("Rule not found: %d.%d.%d", b.Band, b.Pos, varIdx)
+				// }
+				// b.Factor = r.Factor
 				blocks = append(blocks, b)
 			}
 		}

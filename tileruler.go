@@ -3,6 +3,7 @@ package main
 
 import (
 	"encoding/gob"
+	"flag"
 	"fmt"
 	"image"
 	"image/color"
@@ -10,13 +11,22 @@ import (
 	"image/png"
 	"log"
 	"os"
+	"path"
 	"strings"
 	"time"
 
 	"github.com/Unknwon/com"
 
 	"github.com/genomelightning/tileruler/abv"
-	"github.com/genomelightning/tileruler/rule"
+	// "github.com/genomelightning/tileruler/rule"
+)
+
+var (
+	abvDir     = flag.String("abv-dir", "./", "directory that contains abv files")
+	blocksFile = flag.String("blocks-file", "blocks.gob", "path of blocks gob file")
+	imgDir     = flag.String("img-dir", "pngs", "path to store PNGs")
+	maxBandIdx = flag.Int("max-band", 9, "max band index")
+	maxPosIdx  = flag.Int("max-pos", 49, "max position index")
 )
 
 func initImage() *image.RGBA {
@@ -47,16 +57,33 @@ func initImage() *image.RGBA {
 	return m
 }
 
-func drawSquare(m *image.RGBA, c color.Color, x, y int) {
+var varColors = []color.Color{
+	color.RGBA{0, 153, 0, 255},
+	color.RGBA{0, 204, 0, 255},
+	color.RGBA{0, 255, 0, 255},
+	color.RGBA{0, 255, 255, 255},
+	color.RGBA{0, 204, 255, 255},
+	color.RGBA{0, 153, 255, 255},
+	color.RGBA{0, 102, 255, 255},
+	color.RGBA{0, 51, 255, 255},
+	color.RGBA{0, 0, 255, 255},
+	color.RGBA{0, 0, 102, 255},
+}
+
+func drawSquare(m *image.RGBA, idx, x, y int) {
+	if idx >= len(varColors) {
+		idx = len(varColors) - 1
+	}
+
 	for i := 0; i < 15; i++ {
 		for j := 0; j < 15; j++ {
-			m.Set(x*16+i+1, y*16+j+1, c)
+			m.Set(x*16+i+1, y*16+j+1, varColors[idx])
 		}
 	}
 }
 
-func getAbvList() ([]string, error) {
-	dir, err := os.Open("/Users/jiahuachen/Downloads/abram")
+func getAbvList(dirPath string) ([]string, error) {
+	dir, err := os.Open(dirPath)
 	if err != nil {
 		return nil, err
 	}
@@ -76,70 +103,104 @@ func getAbvList() ([]string, error) {
 }
 
 func main() {
+	flag.Parse()
+
 	start := time.Now()
 
-	var rules map[int]map[int]map[int]*rule.Rule
-	var err error
-	if !com.IsExist("tilerules.gob") {
-		// Parse tile rules.
-		rules, err = rule.Parse("/Users/jiahuachen/Downloads/abram/tiles_w_variants.count.sorted")
-		if err != nil {
-			log.Fatalf("Fail to parse rule file: %v", err)
-		}
-		fmt.Println("Time spent(parse rules):", time.Since(start))
+	// NOTE: not doing it for now, maybe next stage of server.
+	// var rules map[int]map[int]map[int]*rule.Rule
+	// var err error
+	// if !com.IsExist("tilerules.gob") {
+	// 	// Parse tile rules.
+	// 	rules, err = rule.Parse("/Users/jiahuachen/Downloads/abram/tiles_w_variants.count.sorted")
+	// 	if err != nil {
+	// 		log.Fatalf("Fail to parse rule file: %v", err)
+	// 	}
+	// 	fmt.Println("Time spent(parse rules):", time.Since(start))
 
-		fw, err := os.Create("tilerules.gob")
-		if err != nil {
-			log.Fatalf("Fail to create gob file: %v", err)
-		}
-		defer fw.Close()
+	// 	fw, err := os.Create("tilerules.gob")
+	// 	if err != nil {
+	// 		log.Fatalf("Fail to create gob file: %v", err)
+	// 	}
+	// 	defer fw.Close()
 
-		if err = gob.NewEncoder(fw).Encode(rules); err != nil {
-			log.Fatalf("Fail to encode gob file: %v", err)
-		}
-		fmt.Println("Time spent(encode gob):", time.Since(start))
-	} else {
-		fr, err := os.Open("tilerules.gob")
-		if err != nil {
-			log.Fatalf("Fail to create gob file: %v", err)
-		}
-		defer fr.Close()
+	// 	if err = gob.NewEncoder(fw).Encode(rules); err != nil {
+	// 		log.Fatalf("Fail to encode gob file: %v", err)
+	// 	}
+	// 	fmt.Println("Time spent(encode gob):", time.Since(start))
+	// } else {
+	// 	fr, err := os.Open("tilerules.gob")
+	// 	if err != nil {
+	// 		log.Fatalf("Fail to create gob file: %v", err)
+	// 	}
+	// 	defer fr.Close()
 
-		if err = gob.NewDecoder(fr).Decode(&rules); err != nil {
-			log.Fatalf("Fail to decode gob file: %v", err)
-		}
-		fmt.Println("Time spent(decode gob):", time.Since(start))
-	}
+	// 	if err = gob.NewDecoder(fr).Decode(&rules); err != nil {
+	// 		log.Fatalf("Fail to decode gob file: %v", err)
+	// 	}
+	// 	fmt.Println("Time spent(decode gob):", time.Since(start))
+	// }
 
-	images := make([][]*image.RGBA, 6)
+	images := make([][]*image.RGBA, *maxBandIdx+1)
 	for i := range images {
-		images[i] = make([]*image.RGBA, 101)
+		images[i] = make([]*image.RGBA, *maxPosIdx+1)
 		for j := range images[i] {
 			images[i][j] = initImage()
 		}
 	}
 
-	names, err := getAbvList()
-	if err != nil {
-		log.Fatalf("Fail to get abv list: %v", err)
-	}
-	humans := make([][]*abv.Block, len(names))
-
-	for i, name := range names {
-		humans[i], err = abv.Parse(fmt.Sprintf("/Users/jiahuachen/Downloads/abram/%s", name), rules)
+	var humans [][]*abv.Block
+	if !com.IsExist(*blocksFile) {
+		names, err := getAbvList(*abvDir)
 		if err != nil {
-			log.Fatalf("Fail to parse abv file(%s): %v", "hu011C57.abv", err)
+			log.Fatalf("Fail to get abv list: %v", err)
+		} else if len(names) == 0 {
+			log.Fatalf("No abv files found: %s", *abvDir)
 		}
+		humans = make([][]*abv.Block, len(names))
 
+		for i, name := range names {
+			humans[i], err = abv.Parse(path.Join(*abvDir, name), *maxBandIdx, *maxPosIdx, nil)
+			if err != nil {
+				log.Fatalf("Fail to parse abv file(%s): %v", name, err)
+			}
+		}
+		fmt.Println("Time spent(parse blocks):", time.Since(start))
+
+		fw, err := os.Create(*blocksFile)
+		if err != nil {
+			log.Fatalf("Fail to create blocks gob file: %v", err)
+		}
+		defer fw.Close()
+
+		if err = gob.NewEncoder(fw).Encode(humans); err != nil {
+			log.Fatalf("Fail to encode blocks gob file: %v", err)
+		}
+		fmt.Println("Time spent(encode blocks gob):", time.Since(start))
+	} else {
+		fr, err := os.Open(*blocksFile)
+		if err != nil {
+			log.Fatalf("Fail to open blocks gob file: %v", err)
+		}
+		defer fr.Close()
+
+		if err = gob.NewDecoder(fr).Decode(&humans); err != nil {
+			log.Fatalf("Fail to decode blocks gob file: %v", err)
+		}
+		fmt.Println("Time spent(decode blocks gob):", time.Since(start))
+	}
+
+	for i := range humans {
 		for _, b := range humans[i] {
-			drawSquare(images[b.Band][b.Pos], color.RGBA{b.Color, b.Color, b.Color, 255}, i%13, i/13)
+			drawSquare(images[b.Band][b.Pos], b.Variant, i%13, i/13)
 		}
 	}
-	fmt.Println("Time spent(parse blocks):", time.Since(start))
+	fmt.Println("Time spent(draw blocks):", time.Since(start))
 
+	os.MkdirAll(*imgDir, os.ModePerm)
 	for i := range images {
 		for j := range images[i] {
-			fr, err := os.Create(fmt.Sprintf("imgs/%d-%d.png", i, j))
+			fr, err := os.Create(fmt.Sprintf("%s/%d-%d.png", *imgDir, i, j))
 			if err != nil {
 				log.Fatalf("Fail to create png file: %v", err)
 			}

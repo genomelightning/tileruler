@@ -104,11 +104,11 @@ func IterateParse(name string, fn IterateFunc) error {
 		}
 
 		// NOTE: limit band and position just for debugging purpose.
-		if r.Band > 5 {
+		if r.Band > 10 {
 			break
 		}
 
-		if r.Pos > 100 {
+		if r.Pos > 50 {
 			continue
 		}
 
