@@ -2,7 +2,7 @@
 package main
 
 import (
-	"encoding/gob"
+	// "encoding/gob"
 	"flag"
 	"fmt"
 	"image"
@@ -12,21 +12,24 @@ import (
 	"log"
 	"os"
 	"path"
+	"runtime"
 	"strings"
 	"time"
 
-	"github.com/Unknwon/com"
+	// "github.com/Unknwon/com"
 
 	"github.com/genomelightning/tileruler/abv"
 	// "github.com/genomelightning/tileruler/rule"
 )
 
 var (
-	abvDir     = flag.String("abv-dir", "./", "directory that contains abv files")
-	blocksFile = flag.String("blocks-file", "blocks.gob", "path of blocks gob file")
-	imgDir     = flag.String("img-dir", "pngs", "path to store PNGs")
-	maxBandIdx = flag.Int("max-band", 9, "max band index")
-	maxPosIdx  = flag.Int("max-pos", 49, "max position index")
+	abvDir       = flag.String("abv-dir", "./", "directory that contains abv files")
+	blocksFile   = flag.String("blocks-file", "blocks.gob", "path of blocks gob file")
+	imgDir       = flag.String("img-dir", "pngs", "path to store PNGs")
+	startBandIdx = flag.Int("start-band", 0, "start band index")
+	startPosIdx  = flag.Int("start-pos", 0, "start position index")
+	maxBandIdx   = flag.Int("max-band", 9, "max band index")
+	maxPosIdx    = flag.Int("max-pos", 49, "max position index")
 )
 
 func initImage() *image.RGBA {
@@ -141,73 +144,116 @@ func main() {
 	// 	fmt.Println("Time spent(decode gob):", time.Since(start))
 	// }
 
-	images := make([][]*image.RGBA, *maxBandIdx+1)
-	for i := range images {
-		images[i] = make([]*image.RGBA, *maxPosIdx+1)
-		for j := range images[i] {
-			images[i][j] = initImage()
-		}
+	var humans []*abv.Human
+	// if !com.IsExist(*blocksFile) {
+	names, err := getAbvList(*abvDir)
+	if err != nil {
+		log.Fatalf("Fail to get abv list: %v", err)
+	} else if len(names) == 0 {
+		log.Fatalf("No abv files found: %s", *abvDir)
 	}
+	humans = make([]*abv.Human, len(names))
 
-	var humans [][]*abv.Block
-	if !com.IsExist(*blocksFile) {
-		names, err := getAbvList(*abvDir)
+	for i, name := range names {
+		humans[i], err = abv.Parse(path.Join(*abvDir, name),
+			&abv.Range{*startBandIdx, *maxBandIdx, *startPosIdx, *maxPosIdx}, nil)
 		if err != nil {
-			log.Fatalf("Fail to get abv list: %v", err)
-		} else if len(names) == 0 {
-			log.Fatalf("No abv files found: %s", *abvDir)
+			log.Fatalf("Fail to parse abv file(%s): %v", name, err)
 		}
-		humans = make([][]*abv.Block, len(names))
-
-		for i, name := range names {
-			humans[i], err = abv.Parse(path.Join(*abvDir, name), *maxBandIdx, *maxPosIdx, nil)
-			if err != nil {
-				log.Fatalf("Fail to parse abv file(%s): %v", name, err)
-			}
-		}
-		fmt.Println("Time spent(parse blocks):", time.Since(start))
-
-		fw, err := os.Create(*blocksFile)
-		if err != nil {
-			log.Fatalf("Fail to create blocks gob file: %v", err)
-		}
-		defer fw.Close()
-
-		if err = gob.NewEncoder(fw).Encode(humans); err != nil {
-			log.Fatalf("Fail to encode blocks gob file: %v", err)
-		}
-		fmt.Println("Time spent(encode blocks gob):", time.Since(start))
-	} else {
-		fr, err := os.Open(*blocksFile)
-		if err != nil {
-			log.Fatalf("Fail to open blocks gob file: %v", err)
-		}
-		defer fr.Close()
-
-		if err = gob.NewDecoder(fr).Decode(&humans); err != nil {
-			log.Fatalf("Fail to decode blocks gob file: %v", err)
-		}
-		fmt.Println("Time spent(decode blocks gob):", time.Since(start))
+		// fmt.Printf("%s: %d * %d\n", name, humans[i].MaxBand, humans[i].MaxPos)
 	}
+	fmt.Println("Time spent(parse blocks):", time.Since(start))
 
-	for i := range humans {
-		for _, b := range humans[i] {
-			drawSquare(images[b.Band][b.Pos], b.Variant, i%13, i/13)
+	// fw, err := os.Create(*blocksFile)
+	// if err != nil {
+	// 	log.Fatalf("Fail to create blocks gob file: %v", err)
+	// }
+	// defer fw.Close()
+
+	// if err = gob.NewEncoder(fw).Encode(humans); err != nil {
+	// 	log.Fatalf("Fail to encode blocks gob file: %v", err)
+	// }
+	// fmt.Println("Time spent(encode blocks gob):", time.Since(start))
+	// } else {
+	// 	fr, err := os.Open(*blocksFile)
+	// 	if err != nil {
+	// 		log.Fatalf("Fail to open blocks gob file: %v", err)
+	// 	}
+	// 	defer fr.Close()
+
+	// 	if err = gob.NewDecoder(fr).Decode(&humans); err != nil {
+	// 		log.Fatalf("Fail to decode blocks gob file: %v", err)
+	// 	}
+	// 	fmt.Println("Time spent(decode blocks gob):", time.Since(start))
+	// }
+
+	realMaxBandIdx := -1
+	realMaxPosIdx := -1
+	// Get max band and position index.
+	for _, h := range humans {
+		if h.MaxBand > realMaxBandIdx {
+			realMaxBandIdx = h.MaxBand
 		}
+		if h.MaxPos > realMaxPosIdx {
+			realMaxPosIdx = h.MaxPos
+		}
+		fmt.Println("Pos Count:", h.PosCount)
 	}
-	fmt.Println("Time spent(draw blocks):", time.Since(start))
+	fmt.Println("Max Band Index:", realMaxBandIdx, "Max Pos Index:", realMaxPosIdx)
+
+	if *maxBandIdx < 0 || *maxBandIdx > realMaxBandIdx {
+		*maxBandIdx = realMaxBandIdx
+	}
 
 	os.MkdirAll(*imgDir, os.ModePerm)
-	for i := range images {
-		for j := range images[i] {
-			fr, err := os.Create(fmt.Sprintf("%s/%d-%d.png", *imgDir, i, j))
+	for i := *startBandIdx; i <= *maxBandIdx; i++ {
+		fmt.Println(i)
+		os.MkdirAll(fmt.Sprintf("%s/%d", *imgDir, i), os.ModePerm)
+		for j := *startPosIdx; j < realMaxPosIdx; j++ {
+			m := initImage()
+			for k := range humans {
+				if b, ok := humans[k].Blocks[i][j]; ok {
+					drawSquare(m, int(b.Variant), k%13, k/13)
+				}
+			}
+			fr, err := os.Create(fmt.Sprintf("%s/%d/%d.png", *imgDir, i, j))
 			if err != nil {
 				log.Fatalf("Fail to create png file: %v", err)
+			} else if err = png.Encode(fr, m); err != nil {
+				log.Fatalf("Fail to encode png file: %v", err)
 			}
-			png.Encode(fr, images[i][j])
 			fr.Close()
 		}
+		runtime.GC()
 	}
+	fmt.Println("Time spent(total):", time.Since(start))
+	return
+	// images := make([][]*image.RGBA, realMaxBandIdx+1)
+	// for i := range images {
+	// 	images[i] = make([]*image.RGBA, realMaxPosIdx+1)
+	// 	for j := range images[i] {
+	// 		images[i][j] = initImage()
+	// 	}
+	// }
+
+	// for i := range humans {
+	// 	for _, b := range humans[i].Blocks {
+	// 		drawSquare(images[b.Band][b.Pos], b.Variant, i%13, i/13)
+	// 	}
+	// }
+	// fmt.Println("Time spent(draw blocks):", time.Since(start))
+
+	// for i := range images {
+	// 	for j := range images[i] {
+	// 		fr, err := os.Create(fmt.Sprintf("%s/%d-%d.png", *imgDir, i, j))
+	// 		if err != nil {
+	// 			log.Fatalf("Fail to create png file: %v", err)
+	// 		} else if err = png.Encode(fr, images[i][j]); err != nil {
+	// 			log.Fatalf("Fail to encode png file: %v", err)
+	// 		}
+	// 		fr.Close()
+	// 	}
+	// }
 
 	fmt.Println("Time spent(total):", time.Since(start))
 }
