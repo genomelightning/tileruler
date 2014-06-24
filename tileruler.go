@@ -238,6 +238,7 @@ func main() {
 			}
 			workChan <- true
 			go func(band, pos int) {
+				fmt.Println(band, pos)
 				fr, err := os.Create(fmt.Sprintf("%s/%d/%d.png", *imgDir, band, pos))
 				// fr, err := os.Create(fmt.Sprintf("%s/%d/%d.png", *imgDir, i, j))
 				if err != nil {
