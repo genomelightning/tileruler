@@ -14,6 +14,7 @@ import (
 	"path"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	// "github.com/Unknwon/com"
@@ -30,10 +31,13 @@ var (
 	startPosIdx  = flag.Int("start-pos", 0, "start position index")
 	maxBandIdx   = flag.Int("max-band", 9, "max band index")
 	maxPosIdx    = flag.Int("max-pos", 49, "max position index")
+	slotPixel    = flag.Int("slot-pixel", 16, "slot pixel of width and height")
+	boxNum       = flag.Int("box-num", 13, "box number")
+	workNum      = flag.Int("work-num", 10, "work chan buffer")
 )
 
 func initImage() *image.RGBA {
-	m := image.NewRGBA(image.Rect(0, 0, 209, 209))
+	m := image.NewRGBA(image.Rect(0, 0, *boxNum**slotPixel+1, *boxNum**slotPixel+1))
 	draw.Draw(m, m.Bounds(), image.White, image.ZP, draw.Src)
 
 	// Draw borders.
@@ -47,14 +51,14 @@ func initImage() *image.RGBA {
 	}
 
 	// Draw grids.
-	for i := 1; i < 13; i++ {
+	for i := 1; i < *boxNum; i++ {
 		for j := m.Bounds().Min.Y; j < m.Bounds().Max.Y; j++ {
-			m.Set(i*16, j, image.Black)
+			m.Set(i**slotPixel, j, image.Black)
 		}
 	}
-	for i := 1; i < 13; i++ {
+	for i := 1; i < *boxNum; i++ {
 		for j := m.Bounds().Min.X; j < m.Bounds().Max.X; j++ {
-			m.Set(j, i*16, image.Black)
+			m.Set(j, i**slotPixel, image.Black)
 		}
 	}
 	return m
@@ -78,9 +82,9 @@ func drawSquare(m *image.RGBA, idx, x, y int) {
 		idx = len(varColors) - 1
 	}
 
-	for i := 0; i < 15; i++ {
-		for j := 0; j < 15; j++ {
-			m.Set(x*16+i+1, y*16+j+1, varColors[idx])
+	for i := 0; i < *slotPixel-1; i++ {
+		for j := 0; j < *slotPixel-1; j++ {
+			m.Set(x**slotPixel+i+1, y**slotPixel+j+1, varColors[idx])
 		}
 	}
 }
@@ -107,6 +111,18 @@ func getAbvList(dirPath string) ([]string, error) {
 
 func main() {
 	flag.Parse()
+
+	// Validate input.
+	switch {
+	case *slotPixel < 2:
+		log.Fatalln("-slot-pixel cannot be smaller than 2")
+	case *boxNum < 13:
+		log.Fatalln("-box-num cannot be smaller than 13")
+	case *workNum < 1:
+		log.Fatalln("-work-num cannot be smaller than 1")
+	}
+
+	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	start := time.Now()
 
@@ -197,7 +213,7 @@ func main() {
 		if h.MaxPos > realMaxPosIdx {
 			realMaxPosIdx = h.MaxPos
 		}
-		fmt.Println("Pos Count:", h.PosCount)
+		// fmt.Println("Pos Count:", h.PosCount)
 	}
 	fmt.Println("Max Band Index:", realMaxBandIdx, "Max Pos Index:", realMaxPosIdx)
 
@@ -205,27 +221,40 @@ func main() {
 		*maxBandIdx = realMaxBandIdx
 	}
 
+	wg := &sync.WaitGroup{}
+	workChan := make(chan bool, *workNum)
+
 	os.MkdirAll(*imgDir, os.ModePerm)
 	for i := *startBandIdx; i <= *maxBandIdx; i++ {
-		fmt.Println(i)
+		// fmt.Println(i)
+		wg.Add(*maxPosIdx - *startPosIdx + 1)
 		os.MkdirAll(fmt.Sprintf("%s/%d", *imgDir, i), os.ModePerm)
-		for j := *startPosIdx; j < realMaxPosIdx; j++ {
+		for j := *startPosIdx; j <= *maxPosIdx; j++ {
 			m := initImage()
 			for k := range humans {
 				if b, ok := humans[k].Blocks[i][j]; ok {
-					drawSquare(m, int(b.Variant), k%13, k/13)
+					drawSquare(m, int(b.Variant), k%*boxNum, k / *boxNum)
 				}
 			}
-			fr, err := os.Create(fmt.Sprintf("%s/%d/%d.png", *imgDir, i, j))
-			if err != nil {
-				log.Fatalf("Fail to create png file: %v", err)
-			} else if err = png.Encode(fr, m); err != nil {
-				log.Fatalf("Fail to encode png file: %v", err)
-			}
-			fr.Close()
+			workChan <- true
+			go func(band, pos int) {
+				fr, err := os.Create(fmt.Sprintf("%s/%d/%d.png", *imgDir, band, pos))
+				// fr, err := os.Create(fmt.Sprintf("%s/%d/%d.png", *imgDir, i, j))
+				if err != nil {
+					log.Fatalf("Fail to create png file: %v", err)
+				} else if err = png.Encode(fr, m); err != nil {
+					log.Fatalf("Fail to encode png file: %v", err)
+				}
+				fr.Close()
+				wg.Done()
+				<-workChan
+			}(i, j)
 		}
 		runtime.GC()
 	}
+
+	fmt.Println("Goroutine #:", runtime.NumGoroutine())
+	wg.Wait()
 	fmt.Println("Time spent(total):", time.Since(start))
 	return
 	// images := make([][]*image.RGBA, realMaxBandIdx+1)
