@@ -1,96 +1,92 @@
-// Tile Ruler is a command line tool for parsing genome tile rules.
+// Tile Ruler is a command line tool for generating PNGs based on given abv files.
 package main
 
 import (
-	// "encoding/gob"
+	"errors"
 	"flag"
 	"fmt"
-	"image"
-	"image/color"
-	"image/draw"
-	"image/png"
 	"log"
 	"os"
-	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
-	// "github.com/Unknwon/com"
+	"github.com/Unknwon/com"
 
 	"github.com/genomelightning/tileruler/abv"
 	// "github.com/genomelightning/tileruler/rule"
 )
 
 var (
-	abvDir       = flag.String("abv-dir", "./", "directory that contains abv files")
-	blocksFile   = flag.String("blocks-file", "blocks.gob", "path of blocks gob file")
+	abvPath      = flag.String("abv-path", "./", "directory or path of abv file(s)")
 	imgDir       = flag.String("img-dir", "pngs", "path to store PNGs")
+	singleMode   = flag.Bool("single-mode", true, "generate PNG per abv")
+	slotPixel    = flag.Int("slot-pixel", 1, "slot pixel of width and height")
+	hasGrids     = flag.Bool("has-grids", false, "indicates whether slot has border")
 	startBandIdx = flag.Int("start-band", 0, "start band index")
 	startPosIdx  = flag.Int("start-pos", 0, "start position index")
 	maxBandIdx   = flag.Int("max-band", 9, "max band index")
 	maxPosIdx    = flag.Int("max-pos", 49, "max position index")
-	slotPixel    = flag.Int("slot-pixel", 16, "slot pixel of width and height")
 	boxNum       = flag.Int("box-num", 13, "box number")
 	workNum      = flag.Int("work-num", 10, "work chan buffer")
 )
 
-func initImage() *image.RGBA {
-	m := image.NewRGBA(image.Rect(0, 0, *boxNum**slotPixel+1, *boxNum**slotPixel+1))
-	draw.Draw(m, m.Bounds(), image.White, image.ZP, draw.Src)
+var start = time.Now()
 
-	// Draw borders.
-	for i := m.Bounds().Min.X; i < m.Bounds().Max.X; i++ {
-		m.Set(i, m.Bounds().Min.Y, image.Black)
-		m.Set(i, m.Bounds().Max.Y-1, image.Black)
-	}
-	for i := m.Bounds().Min.Y; i < m.Bounds().Max.Y; i++ {
-		m.Set(m.Bounds().Min.X, i, image.Black)
-		m.Set(m.Bounds().Max.X-1, i, image.Black)
-	}
-
-	// Draw grids.
-	for i := 1; i < *boxNum; i++ {
-		for j := m.Bounds().Min.Y; j < m.Bounds().Max.Y; j++ {
-			m.Set(i**slotPixel, j, image.Black)
-		}
-	}
-	for i := 1; i < *boxNum; i++ {
-		for j := m.Bounds().Min.X; j < m.Bounds().Max.X; j++ {
-			m.Set(j, i**slotPixel, image.Black)
-		}
-	}
-	return m
+type Option struct {
+	ImgDir      string
+	SlotPixel   int
+	HasGrids    bool
+	IsSingleAbv bool
+	*abv.Range
+	MaxWorkNum int // Max goroutine number.
 }
 
-var varColors = []color.Color{
-	color.RGBA{0, 153, 0, 255},
-	color.RGBA{0, 204, 0, 255},
-	color.RGBA{0, 255, 0, 255},
-	color.RGBA{0, 255, 255, 255},
-	color.RGBA{0, 204, 255, 255},
-	color.RGBA{0, 153, 255, 255},
-	color.RGBA{0, 102, 255, 255},
-	color.RGBA{0, 51, 255, 255},
-	color.RGBA{0, 0, 255, 255},
-	color.RGBA{0, 0, 102, 255},
-}
-
-func drawSquare(m *image.RGBA, idx, x, y int) {
-	if idx >= len(varColors) {
-		idx = len(varColors) - 1
+func validateInput() (*Option, error) {
+	flag.Parse()
+	opt := &Option{
+		ImgDir:      *imgDir,
+		SlotPixel:   *slotPixel,
+		HasGrids:    *hasGrids,
+		IsSingleAbv: *singleMode,
+		Range: &abv.Range{
+			StartBandIdx: *startBandIdx,
+			EndBandIdx:   *maxBandIdx,
+			StartPosIdx:  *startPosIdx,
+			EndPosIdx:    *maxPosIdx,
+		},
+		MaxWorkNum: *workNum,
 	}
 
-	for i := 0; i < *slotPixel-1; i++ {
-		for j := 0; j < *slotPixel-1; j++ {
-			m.Set(x**slotPixel+i+1, y**slotPixel+j+1, varColors[idx])
+	if opt.HasGrids {
+		if opt.SlotPixel < 2 {
+			return nil, errors.New("-slot-pixel cannot be smaller than 2 with grids")
 		}
+	} else if opt.SlotPixel < 1 {
+		return nil, errors.New("-slot-pixel cannot be smaller than 1")
 	}
+
+	switch {
+	case *boxNum < 13:
+		log.Fatalln("-box-num cannot be smaller than 13")
+	case opt.MaxWorkNum < 1:
+		log.Fatalln("-work-num cannot be smaller than 1")
+	}
+	return opt, nil
 }
 
-func getAbvList(dirPath string) ([]string, error) {
-	dir, err := os.Open(dirPath)
+// getAbvList returns a list of abv file paths.
+// It recognize if given path is a file.
+func getAbvList(abvPath string) ([]string, error) {
+	if !com.IsExist(abvPath) {
+		return nil, errors.New("Given abv path does not exist")
+	} else if com.IsFile(abvPath) {
+		return []string{abvPath}, nil
+	}
+
+	// Given path is a directory.
+	dir, err := os.Open(abvPath)
 	if err != nil {
 		return nil, err
 	}
@@ -103,28 +99,49 @@ func getAbvList(dirPath string) ([]string, error) {
 	abvs := make([]string, 0, len(fis))
 	for _, fi := range fis {
 		if strings.HasSuffix(fi.Name(), ".abv") {
-			abvs = append(abvs, fi.Name())
+			abvs = append(abvs, filepath.Join(abvPath, fi.Name()))
 		}
 	}
 	return abvs, nil
 }
 
-func main() {
-	flag.Parse()
-
-	// Validate input.
-	switch {
-	case *slotPixel < 2:
-		log.Fatalln("-slot-pixel cannot be smaller than 2")
-	case *boxNum < 13:
-		log.Fatalln("-box-num cannot be smaller than 13")
-	case *workNum < 1:
-		log.Fatalln("-work-num cannot be smaller than 1")
+func rangeString(idx int) string {
+	if idx < 0 {
+		return "MAX"
 	}
+	return com.ToStr(idx)
+}
+
+func generateAbvImgs(opt *Option, names []string) error {
+	for i, name := range names {
+		h, err := abv.Parse(name, opt.Range, nil)
+		if err != nil {
+			log.Fatalf("Fail to parse abv file(%s): %v", name, err)
+		}
+		h.Name = filepath.Base(name)
+
+		opt.EndBandIdx = h.MaxBand
+		opt.EndPosIdx = h.MaxPos
+		if err = GenerateAbvImg(opt, h); err != nil {
+			return err
+		}
+		fmt.Printf("%d[%s]: %s: %d * %d\n", i, time.Since(start), h.Name, h.MaxBand, h.MaxPos)
+	}
+	return nil
+}
+
+func main() {
+	opt, err := validateInput()
+	if err != nil {
+		log.Fatalln(err)
+	}
+	fmt.Println("Option:")
+	fmt.Printf("Band Range: %d - %s\n", opt.StartBandIdx, rangeString(opt.EndBandIdx))
+	fmt.Printf("Pos Range: %d - %s\n", opt.StartPosIdx, rangeString(opt.EndPosIdx))
+	fmt.Println("Has Grids:", opt.HasGrids)
+	fmt.Println()
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
-
-	start := time.Now()
 
 	// NOTE: not doing it for now, maybe next stage of server.
 	// var rules map[int]map[int]map[int]*rule.Rule
@@ -160,52 +177,39 @@ func main() {
 	// 	fmt.Println("Time spent(decode gob):", time.Since(start))
 	// }
 
+	// Parse abv file.
 	var humans []*abv.Human
-	// if !com.IsExist(*blocksFile) {
-	names, err := getAbvList(*abvDir)
+	names, err := getAbvList(*abvPath)
 	if err != nil {
 		log.Fatalf("Fail to get abv list: %v", err)
 	} else if len(names) == 0 {
-		log.Fatalf("No abv files found: %s", *abvDir)
+		log.Fatalf("No abv files found: %s", *abvPath)
 	}
-	humans = make([]*abv.Human, len(names))
+	// humans = make([]*abv.Human, len(names))
+
+	if opt.IsSingleAbv {
+		err = generateAbvImgs(opt, names)
+	}
+	if err != nil {
+		log.Fatalf("Fail to generate PNG files: %v", err)
+	}
+	fmt.Println("Time spent(total):", time.Since(start))
+	return
 
 	for i, name := range names {
-		humans[i], err = abv.Parse(path.Join(*abvDir, name),
-			&abv.Range{*startBandIdx, *maxBandIdx, *startPosIdx, *maxPosIdx}, nil)
+		humans[i], err = abv.Parse(name, opt.Range, nil)
 		if err != nil {
 			log.Fatalf("Fail to parse abv file(%s): %v", name, err)
 		}
-		// fmt.Printf("%s: %d * %d\n", name, humans[i].MaxBand, humans[i].MaxPos)
+		humans[i].Name = filepath.Base(name)
+		fmt.Printf("%d: %s: %d * %d\n", i, humans[i].Name, humans[i].MaxBand, humans[i].MaxPos)
 	}
 	fmt.Println("Time spent(parse blocks):", time.Since(start))
+	fmt.Println()
 
-	// fw, err := os.Create(*blocksFile)
-	// if err != nil {
-	// 	log.Fatalf("Fail to create blocks gob file: %v", err)
-	// }
-	// defer fw.Close()
-
-	// if err = gob.NewEncoder(fw).Encode(humans); err != nil {
-	// 	log.Fatalf("Fail to encode blocks gob file: %v", err)
-	// }
-	// fmt.Println("Time spent(encode blocks gob):", time.Since(start))
-	// } else {
-	// 	fr, err := os.Open(*blocksFile)
-	// 	if err != nil {
-	// 		log.Fatalf("Fail to open blocks gob file: %v", err)
-	// 	}
-	// 	defer fr.Close()
-
-	// 	if err = gob.NewDecoder(fr).Decode(&humans); err != nil {
-	// 		log.Fatalf("Fail to decode blocks gob file: %v", err)
-	// 	}
-	// 	fmt.Println("Time spent(decode blocks gob):", time.Since(start))
-	// }
-
+	// Get max band and position index.
 	realMaxBandIdx := -1
 	realMaxPosIdx := -1
-	// Get max band and position index.
 	for _, h := range humans {
 		if h.MaxBand > realMaxBandIdx {
 			realMaxBandIdx = h.MaxBand
@@ -215,48 +219,14 @@ func main() {
 		}
 		// fmt.Println("Pos Count:", h.PosCount)
 	}
-	fmt.Println("Max Band Index:", realMaxBandIdx, "Max Pos Index:", realMaxPosIdx)
 
-	if *maxBandIdx < 0 || *maxBandIdx > realMaxBandIdx {
-		*maxBandIdx = realMaxBandIdx
+	if opt.EndBandIdx < 0 || opt.EndBandIdx > realMaxBandIdx {
+		opt.EndBandIdx = realMaxBandIdx
 	}
-
-	wg := &sync.WaitGroup{}
-	workChan := make(chan bool, *workNum)
-
-	os.MkdirAll(*imgDir, os.ModePerm)
-	for i := *startBandIdx; i <= *maxBandIdx; i++ {
-		// fmt.Println(i)
-		wg.Add(*maxPosIdx - *startPosIdx + 1)
-		os.MkdirAll(fmt.Sprintf("%s/%d", *imgDir, i), os.ModePerm)
-		for j := *startPosIdx; j <= *maxPosIdx; j++ {
-			m := initImage()
-			for k := range humans {
-				if b, ok := humans[k].Blocks[i][j]; ok {
-					drawSquare(m, int(b.Variant), k%*boxNum, k / *boxNum)
-				}
-			}
-			workChan <- true
-			go func(band, pos int) {
-				fmt.Println(band, pos)
-				fr, err := os.Create(fmt.Sprintf("%s/%d/%d.png", *imgDir, band, pos))
-				// fr, err := os.Create(fmt.Sprintf("%s/%d/%d.png", *imgDir, i, j))
-				if err != nil {
-					log.Fatalf("Fail to create png file: %v", err)
-				} else if err = png.Encode(fr, m); err != nil {
-					log.Fatalf("Fail to encode png file: %v", err)
-				}
-				fr.Close()
-				wg.Done()
-				<-workChan
-			}(i, j)
-		}
-		runtime.GC()
+	if opt.EndPosIdx < 0 || opt.EndPosIdx > realMaxPosIdx {
+		opt.EndPosIdx = realMaxPosIdx
 	}
-
-	fmt.Println("Goroutine #:", runtime.NumGoroutine())
-	wg.Wait()
-	fmt.Println("Time spent(total):", time.Since(start))
+	fmt.Println("Max Band Index:", opt.EndBandIdx, "\nMax Pos Index:", opt.EndPosIdx)
 	return
 	// images := make([][]*image.RGBA, realMaxBandIdx+1)
 	// for i := range images {

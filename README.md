@@ -1,4 +1,4 @@
-tileruler
-=========
+Tile Ruler
+==========
 
-Package tileruler is a genome tile rule parser of lightning project.
+Tile Ruler is a command line tool for generating PNGs based on given abv files.

@@ -27,6 +27,7 @@ type Block struct {
 }
 
 type Human struct {
+	Name            string
 	Blocks          map[int]map[int]*Block
 	BandLength      map[int]int // 1-based.
 	PosCount        int
