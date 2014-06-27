@@ -15,47 +15,56 @@ import (
 	"github.com/Unknwon/com"
 
 	"github.com/genomelightning/tileruler/abv"
-	// "github.com/genomelightning/tileruler/rule"
 )
 
 var (
 	abvPath      = flag.String("abv-path", "./", "directory or path of abv file(s)")
 	imgDir       = flag.String("img-dir", "pngs", "path to store PNGs")
-	singleMode   = flag.Bool("single-mode", true, "generate PNG per abv")
+	mode         = flag.Int("mode", 0, "1-single; 2-all in one; 3-all in one abv")
 	slotPixel    = flag.Int("slot-pixel", 1, "slot pixel of width and height")
 	hasGrids     = flag.Bool("has-grids", false, "indicates whether slot has border")
 	startBandIdx = flag.Int("start-band", 0, "start band index")
 	startPosIdx  = flag.Int("start-pos", 0, "start position index")
 	maxBandIdx   = flag.Int("max-band", 9, "max band index")
 	maxPosIdx    = flag.Int("max-pos", 49, "max position index")
-	boxNum       = flag.Int("box-num", 13, "box number")
+	boxNum       = flag.Int("box-num", 13, "box number of width and height")
 	workNum      = flag.Int("work-num", 10, "work chan buffer")
 )
 
 var start = time.Now()
 
+type Mode int
+
+const (
+	SINGLE Mode = iota + 1
+	ALL_IN_ONE
+	ALL_IN_ONE_ABV
+)
+
 type Option struct {
-	ImgDir      string
-	SlotPixel   int
-	HasGrids    bool
-	IsSingleAbv bool
+	ImgDir    string
+	SlotPixel int
+	HasGrids  bool
+	Mode      Mode
 	*abv.Range
+	BoxNum     int
 	MaxWorkNum int // Max goroutine number.
 }
 
 func validateInput() (*Option, error) {
 	flag.Parse()
 	opt := &Option{
-		ImgDir:      *imgDir,
-		SlotPixel:   *slotPixel,
-		HasGrids:    *hasGrids,
-		IsSingleAbv: *singleMode,
+		ImgDir:    *imgDir,
+		SlotPixel: *slotPixel,
+		HasGrids:  *hasGrids,
+		Mode:      Mode(*mode),
 		Range: &abv.Range{
 			StartBandIdx: *startBandIdx,
 			EndBandIdx:   *maxBandIdx,
 			StartPosIdx:  *startPosIdx,
 			EndPosIdx:    *maxPosIdx,
 		},
+		BoxNum:     *boxNum,
 		MaxWorkNum: *workNum,
 	}
 
@@ -68,8 +77,8 @@ func validateInput() (*Option, error) {
 	}
 
 	switch {
-	case *boxNum < 13:
-		log.Fatalln("-box-num cannot be smaller than 13")
+	case (opt.Mode == ALL_IN_ONE || opt.Mode == ALL_IN_ONE_ABV) && opt.BoxNum < 13:
+		log.Fatalln("-box-num cannot be smaller than 13 in all-in-one mode")
 	case opt.MaxWorkNum < 1:
 		log.Fatalln("-work-num cannot be smaller than 1")
 	}
@@ -112,24 +121,6 @@ func rangeString(idx int) string {
 	return com.ToStr(idx)
 }
 
-func generateAbvImgs(opt *Option, names []string) error {
-	for i, name := range names {
-		h, err := abv.Parse(name, opt.Range, nil)
-		if err != nil {
-			log.Fatalf("Fail to parse abv file(%s): %v", name, err)
-		}
-		h.Name = filepath.Base(name)
-
-		opt.EndBandIdx = h.MaxBand
-		opt.EndPosIdx = h.MaxPos
-		if err = GenerateAbvImg(opt, h); err != nil {
-			return err
-		}
-		fmt.Printf("%d[%s]: %s: %d * %d\n", i, time.Since(start), h.Name, h.MaxBand, h.MaxPos)
-	}
-	return nil
-}
-
 func main() {
 	opt, err := validateInput()
 	if err != nil {
@@ -139,43 +130,8 @@ func main() {
 	fmt.Printf("Band Range: %d - %s\n", opt.StartBandIdx, rangeString(opt.EndBandIdx))
 	fmt.Printf("Pos Range: %d - %s\n", opt.StartPosIdx, rangeString(opt.EndPosIdx))
 	fmt.Println("Has Grids:", opt.HasGrids)
-	fmt.Println()
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
-
-	// NOTE: not doing it for now, maybe next stage of server.
-	// var rules map[int]map[int]map[int]*rule.Rule
-	// var err error
-	// if !com.IsExist("tilerules.gob") {
-	// 	// Parse tile rules.
-	// 	rules, err = rule.Parse("/Users/jiahuachen/Downloads/abram/tiles_w_variants.count.sorted")
-	// 	if err != nil {
-	// 		log.Fatalf("Fail to parse rule file: %v", err)
-	// 	}
-	// 	fmt.Println("Time spent(parse rules):", time.Since(start))
-
-	// 	fw, err := os.Create("tilerules.gob")
-	// 	if err != nil {
-	// 		log.Fatalf("Fail to create gob file: %v", err)
-	// 	}
-	// 	defer fw.Close()
-
-	// 	if err = gob.NewEncoder(fw).Encode(rules); err != nil {
-	// 		log.Fatalf("Fail to encode gob file: %v", err)
-	// 	}
-	// 	fmt.Println("Time spent(encode gob):", time.Since(start))
-	// } else {
-	// 	fr, err := os.Open("tilerules.gob")
-	// 	if err != nil {
-	// 		log.Fatalf("Fail to create gob file: %v", err)
-	// 	}
-	// 	defer fr.Close()
-
-	// 	if err = gob.NewDecoder(fr).Decode(&rules); err != nil {
-	// 		log.Fatalf("Fail to decode gob file: %v", err)
-	// 	}
-	// 	fmt.Println("Time spent(decode gob):", time.Since(start))
-	// }
 
 	// Parse abv file.
 	var humans []*abv.Human
@@ -187,8 +143,17 @@ func main() {
 	}
 	// humans = make([]*abv.Human, len(names))
 
-	if opt.IsSingleAbv {
-		err = generateAbvImgs(opt, names)
+	switch opt.Mode {
+	case SINGLE:
+		fmt.Println("Mode: Single\n")
+		err = GenerateAbvImgs(opt, names)
+	case ALL_IN_ONE:
+		fmt.Println("Mode: All-in-one\n")
+		err = GenerateGiantGenomeImg(opt, names)
+	case ALL_IN_ONE_ABV:
+		fmt.Println("Mode: All-in-one abv\n")
+	default:
+		log.Fatalln("Unknown run mode:", opt.Mode)
 	}
 	if err != nil {
 		log.Fatalf("Fail to generate PNG files: %v", err)
@@ -227,33 +192,4 @@ func main() {
 		opt.EndPosIdx = realMaxPosIdx
 	}
 	fmt.Println("Max Band Index:", opt.EndBandIdx, "\nMax Pos Index:", opt.EndPosIdx)
-	return
-	// images := make([][]*image.RGBA, realMaxBandIdx+1)
-	// for i := range images {
-	// 	images[i] = make([]*image.RGBA, realMaxPosIdx+1)
-	// 	for j := range images[i] {
-	// 		images[i][j] = initImage()
-	// 	}
-	// }
-
-	// for i := range humans {
-	// 	for _, b := range humans[i].Blocks {
-	// 		drawSquare(images[b.Band][b.Pos], b.Variant, i%13, i/13)
-	// 	}
-	// }
-	// fmt.Println("Time spent(draw blocks):", time.Since(start))
-
-	// for i := range images {
-	// 	for j := range images[i] {
-	// 		fr, err := os.Create(fmt.Sprintf("%s/%d-%d.png", *imgDir, i, j))
-	// 		if err != nil {
-	// 			log.Fatalf("Fail to create png file: %v", err)
-	// 		} else if err = png.Encode(fr, images[i][j]); err != nil {
-	// 			log.Fatalf("Fail to encode png file: %v", err)
-	// 		}
-	// 		fr.Close()
-	// 	}
-	// }
-
-	fmt.Println("Time spent(total):", time.Since(start))
 }

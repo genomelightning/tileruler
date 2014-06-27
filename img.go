@@ -8,8 +8,10 @@ import (
 	"image/png"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/genomelightning/tileruler/abv"
 )
@@ -27,7 +29,7 @@ var varColors = []color.Color{
 	color.RGBA{0, 0, 102, 255},
 }
 
-func initImage(opt *Option) *image.RGBA {
+func initImage2(opt *Option) *image.RGBA {
 	m := image.NewRGBA(image.Rect(0, 0, *boxNum**slotPixel+1, *boxNum**slotPixel+1))
 	draw.Draw(m, m.Bounds(), image.White, image.ZP, draw.Src)
 
@@ -57,20 +59,15 @@ func initImage(opt *Option) *image.RGBA {
 	return m
 }
 
-func drawSquare(opt *Option, m *image.RGBA, idx, x, y int) {
+func drawSingleSquare(opt *Option, m *image.RGBA, idx, x, y int) {
 	// In case variant number is too large.
 	if idx >= len(varColors) {
 		idx = len(varColors) - 1
 	}
 
-	// Left border offset.
-	offset := 0
-	if opt.HasGrids {
-		offset = 1
-	}
 	for i := 0; i < opt.SlotPixel; i++ {
 		for j := 0; j < opt.SlotPixel; j++ {
-			m.Set(x*opt.SlotPixel+i+offset, y*opt.SlotPixel+j+offset, varColors[idx])
+			m.Set(x*opt.SlotPixel+i, y*opt.SlotPixel+j, varColors[idx])
 		}
 	}
 }
@@ -86,10 +83,10 @@ func GenerateImgPerTile(opt *Option, humans []*abv.Human) {
 		wg.Add(opt.EndPosIdx - opt.StartPosIdx + 1)
 		os.MkdirAll(fmt.Sprintf("%s/%d", opt.ImgDir, i), os.ModePerm)
 		for j := opt.StartPosIdx; j <= opt.EndPosIdx; j++ {
-			m := initImage(opt)
+			m := initImage2(opt)
 			for k := range humans {
 				if b, ok := humans[k].Blocks[i][j]; ok {
-					drawSquare(opt, m, int(b.Variant), k%*boxNum, k / *boxNum)
+					drawSingleSquare(opt, m, int(b.Variant), k%*boxNum, k / *boxNum)
 				}
 			}
 			workChan <- true
@@ -97,14 +94,14 @@ func GenerateImgPerTile(opt *Option, humans []*abv.Human) {
 				if pos%1000 == 0 {
 					fmt.Println(band, pos)
 				}
-				fr, err := os.Create(fmt.Sprintf("%s/%d/%d.png", opt.ImgDir, band, pos))
-				// fr, err := os.Create(fmt.Sprintf("%s/%d/%d.png", *imgDir, i, j))
+				fw, err := os.Create(fmt.Sprintf("%s/%d/%d.png", opt.ImgDir, band, pos))
+				// fw, err := os.Create(fmt.Sprintf("%s/%d/%d.png", *imgDir, i, j))
 				if err != nil {
 					log.Fatalf("Fail to create png file: %v", err)
-				} else if err = png.Encode(fr, m); err != nil {
+				} else if err = png.Encode(fw, m); err != nil {
 					log.Fatalf("Fail to encode png file: %v", err)
 				}
-				fr.Close()
+				fw.Close()
 				wg.Done()
 				<-workChan
 			}(i, j)
@@ -116,8 +113,14 @@ func GenerateImgPerTile(opt *Option, humans []*abv.Human) {
 	wg.Wait()
 }
 
-func initAbvImage(opt *Option) *image.RGBA {
-	m := image.NewRGBA(image.Rect(0, 0, (opt.EndPosIdx+1)*opt.SlotPixel, (opt.EndBandIdx+1)*opt.SlotPixel))
+func initImage(opt *Option) *image.RGBA {
+	boxNum := 1
+	switch opt.Mode {
+	case ALL_IN_ONE, ALL_IN_ONE_ABV:
+		boxNum = opt.BoxNum
+	}
+	m := image.NewRGBA(image.Rect(0, 0,
+		(opt.EndPosIdx+1)*boxNum*opt.SlotPixel, (opt.EndBandIdx+1)*boxNum*opt.SlotPixel))
 	draw.Draw(m, m.Bounds(), image.White, image.ZP, draw.Src)
 	return m
 }
@@ -126,22 +129,99 @@ func initAbvImage(opt *Option) *image.RGBA {
 func GenerateAbvImg(opt *Option, h *abv.Human) error {
 	os.MkdirAll(opt.ImgDir, os.ModePerm)
 
-	m := initAbvImage(opt)
+	m := initImage(opt)
 	for i := opt.StartBandIdx; i <= opt.EndBandIdx; i++ {
 		for j := opt.StartPosIdx; j <= opt.EndPosIdx; j++ {
 			if b, ok := h.Blocks[i][j]; ok {
-				drawSquare(opt, m, int(b.Variant), j, i)
+				drawSingleSquare(opt, m, int(b.Variant), j, i)
 			}
 		}
 	}
 
-	fr, err := os.Create(fmt.Sprintf("%s/%s.png", opt.ImgDir, h.Name))
+	fw, err := os.Create(fmt.Sprintf("%s/%s.png", opt.ImgDir, h.Name))
 	if err != nil {
-		log.Fatalf("Fail to create PNG file(%s): %v", h.Name, err)
-	} else if err = png.Encode(fr, m); err != nil {
-		log.Fatalf("Fail to encode PNG file(%s): %v", h.Name, err)
+		return fmt.Errorf("Fail to create PNG file(%s): %v", h.Name, err)
 	}
-	fr.Close()
+	defer fw.Close()
+
+	if err = png.Encode(fw, m); err != nil {
+		return fmt.Errorf("Fail to encode PNG file(%s): %v", h.Name, err)
+	}
 	runtime.GC()
+	return nil
+}
+
+// GenerateAbvImgs is a high level function to generate PNG for each abv file.
+func GenerateAbvImgs(opt *Option, names []string) error {
+	for i, name := range names {
+		h, err := abv.Parse(name, opt.Range, nil)
+		if err != nil {
+			return fmt.Errorf("Fail to parse abv file(%s): %v", name, err)
+		}
+		h.Name = filepath.Base(name)
+
+		opt.EndBandIdx = h.MaxBand
+		opt.EndPosIdx = h.MaxPos
+		if err = GenerateAbvImg(opt, h); err != nil {
+			return err
+		}
+		fmt.Printf("%d[%s]: %s: %d * %d\n", i, time.Since(start), h.Name, h.MaxBand, h.MaxPos)
+	}
+	return nil
+}
+
+func drawAllInOneSquare(opt *Option, m *image.RGBA, idx, x, y int) {
+	// In case variant number is too large.
+	if idx >= len(varColors) {
+		idx = len(varColors) - 1
+	}
+
+	for i := 0; i < opt.SlotPixel; i++ {
+		for j := 0; j < opt.SlotPixel; j++ {
+			m.Set(x+i, y+j, varColors[idx])
+		}
+	}
+}
+
+// GenerateGiantGenomeImg generates a single PNG file that contains all abv files' info.
+func GenerateGiantGenomeImg(opt *Option, names []string) error {
+	// NOTE: in order to generate whole PNG for shorter porcessing time,
+	// use user input to specify the -max-band=508 and -max-pos=59999
+	// would be very nice.
+
+	// NOTE: current implementatio does not support for sorting by colors,
+	// which uses multi-reader to load data piece by piece to save memory.
+
+	m := initImage(opt)
+	fmt.Println("Time spent(init image):", time.Since(start))
+
+	for idx, name := range names {
+		h, err := abv.Parse(name, opt.Range, nil)
+		if err != nil {
+			return fmt.Errorf("Fail to parse abv file(%s): %v", name, err)
+		}
+		h.Name = filepath.Base(name)
+
+		for i := 0; i <= h.MaxBand; i++ {
+			for j, b := range h.Blocks[i] {
+				drawAllInOneSquare(opt, m, int(b.Variant),
+					j*(opt.SlotPixel*opt.BoxNum+1)+idx%13, i*(opt.SlotPixel*opt.BoxNum+1)+idx/13)
+			}
+		}
+		fmt.Printf("%d[%s]: %s: %d * %d\n", idx, time.Since(start), h.Name, h.MaxBand, h.MaxPos)
+		runtime.GC()
+	}
+
+	os.MkdirAll(opt.ImgDir, os.ModePerm)
+	fw, err := os.Create(fmt.Sprintf("%s/all-in-one.png", opt.ImgDir))
+	if err != nil {
+		return fmt.Errorf("Fail to create giant PNG file: %v", err)
+	}
+	defer fw.Close()
+
+	if err = png.Encode(fw, m); err != nil {
+		return fmt.Errorf("Fail to encode giant PNG file: %v", err)
+	}
+
 	return nil
 }
